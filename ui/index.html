@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>DelayedNotifier</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    /* Минимальная вёрстка без фреймворков. Цель — быстро потыкать сервис руками. */
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-top: 0; }
+    form, .panel { background: #f7f7f9; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font: inherit; }
+    button { padding: 8px 16px; border: 0; border-radius: 4px; background: #2d7ef7; color: white; cursor: pointer; font: inherit; }
+    button.secondary { background: #999; }
+    button.danger { background: #d24d4d; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .status-pending  { color: #b8860b; font-weight: 600; }
+    .status-sent     { color: #1f8e3a; font-weight: 600; }
+    .status-failed   { color: #c0392b; font-weight: 600; }
+    .status-canceled { color: #777;     font-weight: 600; }
+    .row { display: flex; gap: 12px; }
+    .row > * { flex: 1; }
+    .muted { color: #777; font-size: 12px; }
+    .err { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <h1>DelayedNotifier</h1>
+
+  <!-- Форма создания нового уведомления -->
+  <form id="create-form">
+    <h3>Новое уведомление</h3>
+    <div class="row">
+      <div>
+        <label for="channel">Канал</label>
+        <select id="channel" name="channel">
+          <option value="email">email</option>
+          <option value="telegram">telegram</option>
+        </select>
+      </div>
+      <div>
+        <label for="recipient">Получатель</label>
+        <input id="recipient" name="recipient" placeholder="user@example.com или chat_id" required />
+      </div>
+    </div>
+    <label for="subject">Тема (для email)</label>
+    <input id="subject" name="subject" placeholder="Тема письма" />
+
+    <label for="message">Сообщение</label>
+    <textarea id="message" name="message" rows="3" required></textarea>
+
+    <label for="send_at">Отправить в (локальное время)</label>
+    <input id="send_at" name="send_at" type="datetime-local" required />
+
+    <p class="muted">ID уведомления возвращает сервер. Запоминаем его в localStorage, чтобы видеть свои уведомления в таблице ниже.</p>
+
+    <button type="submit">Создать</button>
+    <span id="form-status" class="muted"></span>
+  </form>
+
+  <!-- Список уже созданных уведомлений (по ID, которые мы запомнили) -->
+  <div class="panel">
+    <h3>Мои уведомления
+      <button class="secondary" id="refresh-btn" type="button">Обновить</button>
+      <button class="secondary" id="clear-btn" type="button">Очистить список</button>
+    </h3>
+    <table id="list">
+      <thead>
+        <tr>
+          <th>ID</th><th>Канал</th><th>Получатель</th><th>Сообщение</th>
+          <th>Когда</th><th>Статус</th><th>Попытки</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    // Все ID, которые сервер вернул нам в ответ на POST /notify.
+    // Храним в localStorage, чтобы при обновлении страницы список не терялся.
+    const STORAGE_KEY = 'delayed-notifier-ids';
+
+    function loadIds() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+      catch { return []; }
+    }
+    function saveIds(ids) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
+    }
+
+    // Преобразование <input type="datetime-local"> к RFC3339 (UTC).
+    // Браузер даёт нам локальное время без TZ, поэтому делаем Date и берём toISOString().
+    function toRFC3339(localValue) {
+      const d = new Date(localValue);
+      return d.toISOString();
+    }
+
+    // Создание уведомления.
+    document.getElementById('create-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const status = document.getElementById('form-status');
+      status.textContent = 'Отправляю...';
+      status.className = 'muted';
+
+      const body = {
+        channel:   document.getElementById('channel').value,
+        recipient: document.getElementById('recipient').value,
+        subject:   document.getElementById('subject').value,
+        message:   document.getElementById('message').value,
+        send_at:   toRFC3339(document.getElementById('send_at').value),
+      };
+
+      try {
+        const r = await fetch('/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ error: r.statusText }));
+          throw new Error(err.error || 'unknown error');
+        }
+        const created = await r.json();
+        const ids = loadIds();
+        ids.unshift(created.id);
+        saveIds(ids);
+        status.textContent = 'Создано: ' + created.id;
+        await refresh();
+      } catch (err) {
+        status.textContent = 'Ошибка: ' + err.message;
+        status.className = 'err';
+      }
+    });
+
+    // Запрос статуса по одному ID.
+    async function fetchOne(id) {
+      const r = await fetch('/notify/' + encodeURIComponent(id));
+      if (r.status === 404) return { id, status: 'expired' };
+      if (!r.ok) throw new Error(r.statusText);
+      return await r.json();
+    }
+
+    // Отмена уведомления.
+    async function cancelOne(id) {
+      if (!confirm('Отменить уведомление ' + id + '?')) return;
+      const r = await fetch('/notify/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!r.ok && r.status !== 404) {
+        const err = await r.json().catch(() => ({ error: r.statusText }));
+        alert('Не удалось отменить: ' + (err.error || r.status));
+      }
+      await refresh();
+    }
+
+    // Перерисовать таблицу со всеми сохранёнными ID.
+    async function refresh() {
+      const ids = loadIds();
+      const tbody = document.querySelector('#list tbody');
+      tbody.innerHTML = '';
+      for (const id of ids) {
+        let n;
+        try { n = await fetchOne(id); }
+        catch (e) { n = { id, status: 'error', last_error: e.message }; }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><code>${n.id}</code></td>
+          <td>${n.channel || '-'}</td>
+          <td>${n.recipient || '-'}</td>
+          <td>${(n.message || '').slice(0, 60)}</td>
+          <td>${n.send_at ? new Date(n.send_at).toLocaleString() : '-'}</td>
+          <td class="status-${n.status}">${n.status}${n.last_error ? '<div class="muted">' + n.last_error + '</div>' : ''}</td>
+          <td>${n.attempts ?? '-'}</td>
+          <td>
+            ${n.status === 'pending' ? `<button class="danger" data-cancel="${n.id}">отменить</button>` : ''}
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+      // Навешиваем обработчики на кнопки отмены.
+      tbody.querySelectorAll('[data-cancel]').forEach(btn => {
+        btn.addEventListener('click', () => cancelOne(btn.getAttribute('data-cancel')));
+      });
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', refresh);
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      if (confirm('Очистить локальный список ID? Сами уведомления не удалятся.')) {
+        saveIds([]);
+        refresh();
+      }
+    });
+
+    // Авто-обновление каждые 5 секунд — удобно следить, как pending → sent.
+    setInterval(refresh, 5000);
+    refresh();
+  </script>
+</body>
+</html>
