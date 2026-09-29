@@ -1,5 +1,7 @@
 # DelayedNotifier
 
+![CI](https://github.com/lol-pick/DelayedNotifier/actions/workflows/ci.yml/badge.svg)
+
 Сервис отправляет уведомления в Telegram и на email в заданное время: например, напоминание через час или письмо завтра в 9:00.
 
 - **REST API**: создать уведомление, узнать его статус, отменить
