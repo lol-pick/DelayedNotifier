@@ -1,0 +1,42 @@
+services:
+  rabbitmq:
+    build:
+      context: .
+      dockerfile: rabbitmq.Dockerfile
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI (guest / guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "1025:1025"     # SMTP
+      - "8025:8025"     # веб-интерфейс для просмотра писем
+
+  notifier:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_ADDR: redis:6379
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}   # берётся из окружения, в файл не пишем
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mailhog:
+        condition: service_started
