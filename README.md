@@ -1,6 +1,12 @@
 # DelayedNotifier
 
-Сервис отложенных уведомлений на Go: REST API + RabbitMQ (delayed-message-exchange) + Redis + фоновый воркер с экспоненциальным backoff и простой HTML-UI.
+Сервис отправляет уведомления в Telegram и на email в заданное время: например, напоминание через час или письмо завтра в 9:00.
+
+- **REST API**: создать уведомление, узнать его статус, отменить
+- **RabbitMQ** (плагин delayed-message-exchange) придерживает сообщение до нужного момента, поэтому не нужно постоянно опрашивать базу
+- **Redis** хранит уведомления и их статусы
+- **Повторы при сбоях**: если отправка не удалась, воркер пробует снова с растущей паузой, после лимита попыток уведомление помечается как `failed`
+- Простой веб-интерфейс для ручной проверки
 
 ## Структура проекта
 
@@ -8,12 +14,13 @@
 .
 ├── main.go                      
 ├── go.mod
-├── Dockerfile                   
-├── docker-compose.yml           
+├── Dockerfile                   # образ сервиса
+├── rabbitmq.Dockerfile          # RabbitMQ с плагином отложенных сообщений
+├── docker-compose.yml           # сервис + RabbitMQ + Redis + MailHog
 ├── ui/index.html                
 └── internal/
     ├── models/notification.go   
-    ├── storage/redis.go         
+    ├── storage/                 # интерфейс хранилища, Redis и in-memory реализации
     ├── queue/rabbitmq.go        
     ├── sender/
     │   ├── sender.go            
@@ -54,7 +61,7 @@ open http://localhost:8080
 1. Открой [@BotFather](https://t.me/BotFather), создай бота, получи токен.
 2. Напиши боту любое сообщение со своего аккаунта.
 3. Узнай свой `chat_id`: открой `https://api.telegram.org/bot<TOKEN>/getUpdates` и найди поле `message.chat.id`.
-4. Прокинь токен в сервис: либо добавь `TELEGRAM_BOT_TOKEN=...` в `docker-compose.yml`, либо `export TELEGRAM_BOT_TOKEN=...` перед `docker compose up`.
+4. Передай токен через переменную окружения: `export TELEGRAM_BOT_TOKEN=...` перед `docker compose up`. Не записывай токен в файлы репозитория.
 
 После рестарта при `POST /notify` с `"channel": "telegram"` и `"recipient": "<chat_id>"` ты получишь сообщение в Telegram.
 
